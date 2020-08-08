@@ -57,7 +57,43 @@ const Framebuffer = struct {
         allocator.free(self.pixels);
     }
 
-    // TODO: Data saving
+    pub fn save(self: Framebuffer, fileName: []const u8) anyerror!void {
+        var strCache = std.ArrayList(u8).init(allocator);
+        defer strCache.deinit();
+        try strCache.appendSlice("P3\n");
+        try strCache.appendSlice(blk: {
+            var buf: [20]u8 = undefined;
+            break :blk try intToString(self.width, &buf);
+        });
+        try strCache.append(' ');
+        try strCache.appendSlice(blk: {
+            var buf: [20]u8 = undefined;
+            break :blk try intToString(self.height, &buf);
+        });
+        try strCache.appendSlice("\n255\n");
+        for (self.pixels) |*p| {
+            try strCache.appendSlice(blk: {
+                var buf: [20]u8 = undefined;
+                break :blk try intToString(p.*.color.r, &buf);
+            });
+            try strCache.append(' ');
+            try strCache.appendSlice(blk: {
+                var buf: [20]u8 = undefined;
+                break :blk try intToString(p.*.color.g, &buf);
+            });
+            try strCache.append(' ');
+            try strCache.appendSlice(blk: {
+                var buf: [20]u8 = undefined;
+                break :blk try intToString(p.*.color.b, &buf);
+            });
+            try strCache.append('\n');
+        }
+        try std.fs.cwd().writeFile(fileName, strCache.items);
+    }
+
+    fn intToString(int: u32, buf: []u8) ![]const u8 {
+        return try std.fmt.bufPrint(buf, "{}", .{int});
+    }
 };
 
 const Vertex = struct {
@@ -127,10 +163,56 @@ const ParallelMode = enum {
 const Renderer = struct {
     parallelMode: ParallelMode,
 
-    pub fn Render(scene: Scene, fb: *Framebuffer) FbError!void {
-        assert(scene.primitives.items[0].data.line.p2.x == 200);
-        try fb.setPixel(1,1, Pixel {.color = Color { .r = 170 }} );
-        // TODO: Rasterization algorithms
+    pub fn Render(self: Renderer, scene: Scene, fb: *Framebuffer) anyerror!void {
+        for (scene.primitives.items) |item, i| {
+            switch (item.data) {
+                PrimitiveType.line => |line| {
+                    if (self.parallelMode == ParallelMode.singleThread) {
+                        const x0: i32 = @floatToInt(i32, line.p1.x);
+                        const y0: i32 = @floatToInt(i32, line.p1.y);
+                        var x1: i32 = @floatToInt(i32, line.p2.x);
+                        var y1: i32 = @floatToInt(i32, line.p2.y);
+                        const dx = try std.math.absInt(x1 - x0);
+                        const dy = try std.math.absInt(y1 - y0);
+                        var p = 2 * dy - dx;
+                        const twoDy = 2 * dy;
+                        const twoDyMinusDx = 2 * (dy - dx);
+                        var x: i32 = 0;
+                        var y: i32 = 0;
+                        if (x0 > x1) {
+                            x = x1;
+                            y = y1;
+                            x1 = x0;
+                        } else {
+                            x = x0;
+                            y = y0;
+                        }
+                        try fb.setPixel(@intCast(u32, x), @intCast(u32, y), Pixel {
+                            .color = Color {
+                                .r = 255, .g = 255, .b = 255,
+                            }
+                        });
+                        while (x < x1) {
+                            x += 1;
+                            if (p < 0) {
+                                p += twoDy;
+                            } else {
+                                y += 1;
+                                p += twoDyMinusDx;
+                            }
+                            try fb.setPixel(@intCast(u32, x), @intCast(u32, y), Pixel {
+                                .color = Color {
+                                    .r = 255, .g = 255, .b = 255,
+                                }
+                            });
+                        }
+                    }
+                },
+                PrimitiveType.circle => |circle| {
+                    std.debug.print("Circle\n", .{});
+                },
+            }
+        }
     }
 };
 
@@ -160,6 +242,10 @@ test "Framebuffer" {
 
     fb.clear(Color {});
     assert((try fb.getPixel(1920, 1080)).color.a == 0);
+
+    fb.clear(Color { .g = 255 });
+    // Save pass
+    // try fb.save("save.ppm");
 }
 
 test "Elements & Renderer" {
@@ -170,8 +256,8 @@ test "Elements & Renderer" {
         Primitive {
             .data = PrimitiveInfo {
                 .line = Line {
-                    .p1 = Vertex { .x = 0, .y = 0 },
-                    .p2 = Vertex { .x = 200, .y = 200 },
+                    .p1 = Vertex { .x = 400, .y = 400 },
+                    .p2 = Vertex { .x = 800, .y = 200 },
                 }
             },
             .color = Color { .r = 255 },
@@ -179,9 +265,9 @@ test "Elements & Renderer" {
         }
     );
 
-    assert(scene.primitives.items[0].data.line.p2.x == 200);
-
     var fb = try Framebuffer.init(1920, 1080);
-    try Renderer.Render(scene, &fb);
-    assert((try fb.getPixel(1,1)).color.r == 170);
+    const ren = Renderer { .parallelMode = ParallelMode.singleThread };
+    try ren.Render(scene, &fb);
+
+    try fb.save("primitive.ppm");
 }
